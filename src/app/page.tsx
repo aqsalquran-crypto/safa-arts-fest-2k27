@@ -22,14 +22,16 @@ export default function Home() {
       </nav>
 
       <section className="flex min-h-[75vh] flex-col items-center justify-center px-6 text-center">
-        <Image
+        
+<Image
   src="/safa-fest-logo.png"
   alt="SAFA Arts Fest 2K27 Official Logo"
-  width={482}
-  height={315}
+  width={1200}
+  height={785}
   priority
-  className="mb-8 h-auto w-48 md:w-64"
+  className="mb-8 h-auto w-[320px] md:w-[450px]"
 />
+
         <p className="mb-6 text-sm tracking-[0.4em] text-green-400">
           {SITE_CONFIG.institution}
         </p>
