@@ -1,7 +1,8 @@
 
+import { Suspense } from "react";
 import { createClient } from "@/utils/supabase-server";
 
-export default async function SupabaseTestPage() {
+async function SupabaseTestContent() {
   const supabase = await createClient();
 
   const { error } = await supabase
@@ -31,5 +32,19 @@ export default async function SupabaseTestPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function SupabaseTestPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-[#0b0b0b] text-white">
+          Checking Supabase connection...
+        </main>
+      }
+    >
+      <SupabaseTestContent />
+    </Suspense>
   );
 }
