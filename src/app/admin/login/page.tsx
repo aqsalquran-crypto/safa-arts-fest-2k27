@@ -7,7 +7,6 @@ import { createClient } from "../../../utils/supabase";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const supabase = createClient();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,7 +21,9 @@ export default function AdminLoginPage() {
     setError("");
 
     try {
-      // 1. Authenticate with Supabase
+      // Create Supabase client only when login is submitted
+      const supabase = createClient();
+
       const { data, error: loginError } =
         await supabase.auth.signInWithPassword({
           email,
@@ -34,7 +35,7 @@ export default function AdminLoginPage() {
         return;
       }
 
-      // 2. Verify admin authorization
+      // Verify admin authorization
       const { data: admin, error: adminError } =
         await supabase
           .from("admin_profiles")
@@ -48,7 +49,6 @@ export default function AdminLoginPage() {
         return;
       }
 
-      // 3. Redirect to dashboard
       router.replace("/admin/dashboard");
       router.refresh();
 
