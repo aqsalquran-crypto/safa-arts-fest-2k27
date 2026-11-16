@@ -21,21 +21,24 @@ export default function AdminLoginPage() {
     setError("");
 
     try {
-      // Create Supabase client only when login is submitted
       const supabase = createClient();
 
       const { data, error: loginError } =
         await supabase.auth.signInWithPassword({
-          email,
+          email: email.trim(),
           password,
         });
 
-      if (loginError || !data.user) {
-        setError("Invalid email or password.");
+      if (loginError) {
+        setError(`Supabase login error: ${loginError.message}`);
         return;
       }
 
-      // Verify admin authorization
+      if (!data.user) {
+        setError("Login failed: No user was returned.");
+        return;
+      }
+
       const { data: admin, error: adminError } =
         await supabase
           .from("admin_profiles")
@@ -43,17 +46,26 @@ export default function AdminLoginPage() {
           .eq("id", data.user.id)
           .maybeSingle();
 
-      if (adminError || !admin) {
+      if (adminError) {
         await supabase.auth.signOut();
-        setError("You are not authorized as an admin.");
+        setError(`Admin verification error: ${adminError.message}`);
+        return;
+      }
+
+      if (!admin) {
+        await supabase.auth.signOut();
+        setError("Your account is not registered as an admin.");
         return;
       }
 
       router.replace("/admin/dashboard");
       router.refresh();
 
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Unknown error";
+
+      setError(`Unexpected error: ${message}`);
     } finally {
       setLoading(false);
     }
@@ -90,6 +102,7 @@ export default function AdminLoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="Enter admin email"
               required
+              autoComplete="username"
               className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none transition focus:border-green-500"
             />
           </div>
@@ -106,6 +119,7 @@ export default function AdminLoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Enter password"
                 required
+                autoComplete="current-password"
                 className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-3 pr-16 text-white outline-none transition focus:border-green-500"
               />
 
@@ -120,7 +134,7 @@ export default function AdminLoginPage() {
           </div>
 
           {error && (
-            <p className="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
+            <p className="break-words rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">
               {error}
             </p>
           )}
