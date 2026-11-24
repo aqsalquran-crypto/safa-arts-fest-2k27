@@ -1,43 +1,8 @@
+
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { createClient } from "../../../../utils/supabase-server";
 import RegistrationsClient from "./RegistrationsClient";
-
-type ParticipantRow = {
-  id: string;
-  full_name: string;
-  tag_number: string | null;
-  category_id: string | null;
-  team_id: string | null;
-};
-
-type CompetitionRow = {
-  id: string;
-  name: string;
-  competition_type: string | null;
-  status: string | null;
-};
-
-type CategoryRow = {
-  id: string;
-  name: string;
-};
-
-type TeamRow = {
-  id: string;
-  name: string;
-};
-
-type CategoryLinkRow = {
-  competition_id: string;
-  category_id: string;
-};
-
-type RegistrationRow = {
-  id: string;
-  competition_id: string;
-  participant_id: string;
-};
 
 async function RegistrationsData() {
   await connection();
@@ -45,22 +10,22 @@ async function RegistrationsData() {
   const supabase = await createClient();
 
   const [
-    participantResult,
-    competitionResult,
-    categoryLinkResult,
-    categoryResult,
-    teamResult,
-    registrationResult,
+    { data: participantData, error: participantError },
+    { data: competitionData, error: competitionError },
+    { data: categoryLinkData, error: categoryLinkError },
+    { data: categoryData, error: categoryError },
+    { data: teamData, error: teamError },
+    { data: registrationData, error: registrationError },
+    { data: groupData, error: groupError },
+    { data: groupMemberData, error: groupMemberError },
   ] = await Promise.all([
     supabase
       .from("participants")
-      .select("id, full_name, tag_number, category_id, team_id")
-      .order("full_name"),
+      .select("id, full_name, tag_number, category_id, team_id"),
 
     supabase
       .from("competitions")
-      .select("id, name, competition_type, status")
-      .order("name"),
+      .select("id, name, competition_type, status"),
 
     supabase
       .from("competition_categories")
@@ -68,111 +33,91 @@ async function RegistrationsData() {
 
     supabase
       .from("categories")
-      .select("id, name")
-      .order("name"),
+      .select("id, name"),
 
     supabase
       .from("teams")
-      .select("id, name")
-      .order("name"),
+      .select("id, name"),
 
     supabase
       .from("competition_registrations")
       .select("id, competition_id, participant_id")
       .order("registered_at", { ascending: false }),
+
+    supabase
+      .from("competition_groups")
+      .select("id, competition_id, team_id, group_name")
+      .order("created_at", { ascending: false }),
+
+    supabase
+      .from("competition_group_members")
+      .select("group_id, participant_id, competition_id"),
   ]);
 
-  const hasError =
-    !!participantResult.error ||
-    !!competitionResult.error ||
-    !!categoryLinkResult.error ||
-    !!categoryResult.error ||
-    !!teamResult.error ||
-    !!registrationResult.error;
-
-  if (hasError) {
-    console.error("Registration data loading error:", {
-      participants: participantResult.error,
-      competitions: competitionResult.error,
-      categoryLinks: categoryLinkResult.error,
-      categories: categoryResult.error,
-      teams: teamResult.error,
-      registrations: registrationResult.error,
-    });
-  }
-
-  const participantRows =
-    (participantResult.data ?? []) as ParticipantRow[];
-
-  const competitionRows =
-    (competitionResult.data ?? []) as CompetitionRow[];
-
-  const categoryLinks =
-    (categoryLinkResult.data ?? []) as CategoryLinkRow[];
-
-  const categoryRows =
-    (categoryResult.data ?? []) as CategoryRow[];
-
-  const teamRows =
-    (teamResult.data ?? []) as TeamRow[];
-
-  const registrationRows =
-    (registrationResult.data ?? []) as RegistrationRow[];
-
-  const categoryMap = new Map(
-    categoryRows.map((item) => [item.id, item.name])
+  const hasError = Boolean(
+    participantError ||
+      competitionError ||
+      categoryLinkError ||
+      categoryError ||
+      teamError ||
+      registrationError ||
+      groupError ||
+      groupMemberError
   );
 
-  const teamMap = new Map(
-    teamRows.map((item) => [item.id, item.name])
-  );
-
-  const participants = participantRows.map((item) => ({
-    id: item.id,
-    full_name: item.full_name,
-    tag_number: item.tag_number ?? "",
-    category_id: item.category_id ?? "",
-    category_name: item.category_id
-      ? categoryMap.get(item.category_id) ?? ""
-      : "",
-    team_name: item.team_id
-      ? teamMap.get(item.team_id) ?? ""
-      : "",
+  const categories = (categoryData || []).map((category) => ({
+    id: category.id,
+    name: category.name,
   }));
 
-  const eligibleCategories = new Map<string, string[]>();
-
-  categoryLinks.forEach((link) => {
-    const existing =
-      eligibleCategories.get(link.competition_id) ?? [];
-
-    if (!existing.includes(link.category_id)) {
-      existing.push(link.category_id);
-    }
-
-    eligibleCategories.set(link.competition_id, existing);
-  });
-
-  const competitions = competitionRows.map((item) => ({
-    id: item.id,
-    name: item.name,
-    competition_type: item.competition_type ?? "",
-    status: item.status ?? "",
-    eligible_category_ids:
-      eligibleCategories.get(item.id) ?? [],
+  const teams = (teamData || []).map((team) => ({
+    id: team.id,
+    name: team.name,
   }));
 
-  const categories = categoryRows.map((item) => ({
-    id: item.id,
-    name: item.name,
+  const participants = (participantData || []).map((participant) => ({
+    id: participant.id,
+    full_name: participant.full_name,
+    tag_number: participant.tag_number || "",
+    category_id: participant.category_id || "",
+    category_name:
+      categories.find(
+        (category) => category.id === participant.category_id
+      )?.name || "Unknown",
+    team_id: participant.team_id || null,
+    team_name:
+      teams.find((team) => team.id === participant.team_id)?.name ||
+      "Unknown",
+  }));
+
+  const competitions = (competitionData || []).map((competition) => ({
+    id: competition.id,
+    name: competition.name,
+    competition_type: competition.competition_type,
+    status: competition.status,
+    eligible_category_ids: (categoryLinkData || [])
+      .filter((link) => link.competition_id === competition.id)
+      .map((link) => link.category_id),
+  }));
+
+  const groups = (groupData || []).map((group) => ({
+    id: group.id,
+    competition_id: group.competition_id,
+    team_id: group.team_id,
+    group_name: group.group_name,
+    participant_ids: (groupMemberData || [])
+      .filter((member) => member.group_id === group.id)
+      .map((member) => member.participant_id),
   }));
 
   return (
     <RegistrationsClient
       participants={participants}
       competitions={competitions}
-      registrations={registrationRows}
+      registrations={registrationData || []}
       categories={categories}
+      teams={teams}
+      groups={groups}
       error={hasError}
     />
   );
@@ -182,9 +127,7 @@ export default function RegistrationsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-[#0b0b0b] p-8 text-white">
-          Loading registrations...
-        </div>
+        <div className="p-6">Loading registrations...</div>
       }
     >
       <RegistrationsData />

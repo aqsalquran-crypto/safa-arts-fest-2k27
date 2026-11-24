@@ -17,7 +17,10 @@ async function ResultsData() {
     { count: competitionCount, error: countError },
     { data: competitionRows, error: competitionError },
     { data: registrationRows, error: registrationError },
+    { data: participantRows, error: participantError },
     { data: groupRows, error: groupError },
+    { data: categoryRows, error: categoryError },
+    { data: teamRows, error: teamError },
   ] = await Promise.all([
     supabase
       .from("result_sets")
@@ -34,10 +37,12 @@ async function ResultsData() {
           position,
           points,
           participant:participants (
-            full_name
+            full_name,
+            team_id
           ),
           group:competition_groups (
-            group_name
+            group_name,
+            team_id
           )
         )
       `)
@@ -47,33 +52,40 @@ async function ResultsData() {
       .from("competitions")
       .select("id", { count: "exact", head: true }),
 
+    // Fetch competitions in creation order.
     supabase
       .from("competitions")
       .select(`
         id,
         name,
         competition_type,
+        competition_section,
+        created_at,
         competition_categories (
           category_id
         )
-      `),
+      `)
+      .order("created_at", { ascending: true }),
 
-    // Get participants through actual competition registrations.
     supabase
       .from("competition_registrations")
-      .select(`
-        competition_id,
-        participant:participants (
-          id,
-          full_name,
-          tag_number,
-          category_id
-        )
-      `),
+      .select("competition_id, participant_id"),
+
+    supabase
+      .from("participants")
+      .select("id, full_name, tag_number, category_id"),
 
     supabase
       .from("competition_groups")
       .select("id, group_name, competition_id"),
+
+    supabase
+      .from("categories")
+      .select("id, name"),
+
+    supabase
+      .from("teams")
+      .select("id, name"),
   ]);
 
   const dataError =
@@ -81,52 +93,124 @@ async function ResultsData() {
     countError ||
     competitionError ||
     registrationError ||
-    groupError;
+    participantError ||
+    groupError ||
+    categoryError ||
+    teamError;
 
-  const competitions = (competitionRows ?? []).map((item: any) => ({
-    id: item.id,
-    name: item.name,
-    competition_type: item.competition_type,
-    category_ids: (item.competition_categories ?? []).map(
-      (category: any) => category.category_id
-    ),
-  }));
+  // Category lookup.
+  const categoryById = new Map(
+    (categoryRows ?? []).map((category: any) => [
+      category.id,
+      category.name,
+    ])
+  );
 
-  // Each participant is associated with the competition
-  // in which they are actually registered.
-  const participants = (registrationRows ?? [])
-    .filter((registration: any) => registration.participant)
-    .map((registration: any) => ({
-      ...registration.participant,
-      competition_id: registration.competition_id,
-    }));
+  // Team lookup.
+  const teamById = new Map(
+    (teamRows ?? []).map((team: any) => [
+      team.id,
+      team.name,
+    ])
+  );
+
+  // Prepare competitions with section and category names.
+  const competitions = (competitionRows ?? []).map((item: any) => {
+    const categoryIds = (
+      item.competition_categories ?? []
+    ).map((category: any) => category.category_id);
+
+    const categoryNames = categoryIds
+      .map((id: string) => categoryById.get(id))
+      .filter(Boolean) as string[];
+
+    return {
+      id: item.id,
+      name: item.name,
+      competition_type: item.competition_type,
+      competition_section: item.competition_section ?? "OTHER",
+      category_ids: categoryIds,
+      category_names: categoryNames,
+    };
+  });
+
+  // Match registrations with participants.
+  const participantById = new Map(
+    (participantRows ?? []).map((participant: any) => [
+      participant.id,
+      participant,
+    ])
+  );
+
+  const participants = (registrationRows ?? []).flatMap(
+    (registration: any) => {
+      const participant = participantById.get(
+        registration.participant_id
+      );
+
+      if (!participant) {
+        return [];
+      }
+
+      return [
+        {
+          id: participant.id,
+          full_name: participant.full_name,
+          tag_number: participant.tag_number || "",
+          category_id: participant.category_id || "",
+          competition_id: registration.competition_id,
+        },
+      ];
+    }
+  );
 
   const groups = groupRows ?? [];
 
+  // Prepare result management data.
   const results = (resultSets ?? []).map((item: any) => ({
     id: item.id,
     status: item.status,
     published_at: item.published_at,
-    competition_name: item.competition?.name ?? "Unknown competition",
+    competition_name:
+      item.competition?.name ?? "Unknown competition",
     total_entries: item.result_entries?.length ?? 0,
     total_points: (item.result_entries ?? []).reduce(
-      (sum: number, entry: any) => sum + Number(entry.points),
+      (sum: number, entry: any) =>
+        sum + Number(entry.points),
       0
     ),
   }));
 
+  // Prepare published results with participant and team names.
   const publishedCompetitionResults = (resultSets ?? [])
     .filter((item: any) => item.status === "PUBLISHED")
     .map((item: any) => ({
       id: item.id,
-      competition_name: item.competition?.name ?? "Unknown competition",
-      entries: (item.result_entries ?? []).map((entry: any) => ({
-        id: entry.id,
-        position: entry.position,
-        points: Number(entry.points),
-        participant_name: entry.participant?.full_name ?? "",
-        group_name: entry.group?.group_name ?? null,
-      })),
+      competition_name:
+        item.competition?.name ?? "Unknown competition",
+
+      entries: (item.result_entries ?? []).map((entry: any) => {
+        const participantTeamId = entry.participant?.team_id;
+        const groupTeamId = entry.group?.team_id;
+
+        const teamId = participantTeamId ?? groupTeamId;
+
+        return {
+          id: entry.id,
+          position: entry.position,
+          points: Number(entry.points),
+
+          participant_name:
+            entry.participant?.full_name ?? "",
+
+          group_name:
+            entry.group?.group_name ?? null,
+
+          team_name: teamId
+            ? teamById.get(teamId) ?? null
+            : null,
+        };
+      }),
     }));
 
   const totalResults = results.length;
@@ -205,6 +289,10 @@ async function ResultsData() {
           <p className="mt-5 text-sm text-gray-400">
             Available competitions: {competitionCount ?? 0}
           </p>
+
+          <p className="mt-2 text-sm text-gray-400">
+            Registered individual entries: {participants.length}
+          </p>
         </section>
 
         <section className="mt-10 rounded-xl border border-white/10 bg-white/5 p-6">
@@ -273,18 +361,17 @@ async function ResultsData() {
 
                       <td className="px-4 py-4 text-gray-400">
                         {result.published_at
-                          ? new Date(result.published_at).toLocaleString()
+                          ? new Date(
+                              result.published_at
+                            ).toLocaleString()
                           : "—"}
                       </td>
 
                       <td className="px-4 py-4">
-                        {result.status === "DRAFT" ? (
-                          <PublishButton resultSetId={result.id} />
-                        ) : (
-                          <span className="text-green-400">
-                            Published
-                          </span>
-                        )}
+                        <PublishButton
+                          resultSetId={result.id}
+                          status={result.status}
+                        />
                       </td>
                     </tr>
                   ))

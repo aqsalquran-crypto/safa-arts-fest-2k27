@@ -9,7 +9,9 @@ type Competition = {
   id: string;
   name: string;
   competition_type: "INDIVIDUAL" | "GROUP";
+  competition_section: string;
   category_ids: string[];
+  category_names: string[];
 };
 
 type Participant = {
@@ -32,17 +34,11 @@ type Props = {
   groups: CompetitionGroup[];
 };
 
-const positionPoints: Record<string, number> = {
-  "1": 5,
-  "2": 3,
-  "3": 1,
-};
-
-const gradePoints: Record<string, number> = {
-  A: 5,
-  B: 3,
-  C: 1,
-};
+const competitionSections = [
+  { value: "STAGE", label: "STAGE" },
+  { value: "OFF_STAGE", label: "OFF STAGE" },
+  { value: "SPORTS", label: "SPORTS" },
+];
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -83,6 +79,8 @@ export default function ScoreEntry({
   const [targetId, setTargetId] = useState("");
   const [position, setPosition] = useState("1");
   const [grade, setGrade] = useState("A");
+  const [points, setPoints] = useState("10");
+
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error">(
@@ -93,7 +91,6 @@ export default function ScoreEntry({
     (item) => item.id === competitionId
   );
 
-  // Only show participants registered for the selected competition.
   const availableParticipants = useMemo(() => {
     if (!competition) return [];
 
@@ -111,9 +108,7 @@ export default function ScoreEntry({
     [groups, competitionId]
   );
 
-  const totalPoints =
-    (positionPoints[position] ?? 0) +
-    (gradePoints[grade] ?? 0);
+  const totalPoints = Number(points) || 0;
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -124,9 +119,13 @@ export default function ScoreEntry({
       return;
     }
 
-    if (!positionPoints[position] || !gradePoints[grade]) {
+    if (
+      points.trim() === "" ||
+      !Number.isFinite(Number(points)) ||
+      Number(points) < 0
+    ) {
       setMessageType("error");
-      setMessage("Please select a valid position and grade.");
+      setMessage("Please enter valid points (0 or above).");
       return;
     }
 
@@ -141,7 +140,6 @@ export default function ScoreEntry({
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
       );
 
-      // STEP 1: Find existing draft.
       currentStep = "Finding existing draft result";
 
       const { data: existingSet, error: findError } = await supabase
@@ -156,7 +154,6 @@ export default function ScoreEntry({
 
       let resultSetId = existingSet?.id;
 
-      // STEP 2: Create draft if it does not exist.
       if (!resultSetId) {
         currentStep = "Creating draft result";
 
@@ -180,7 +177,6 @@ export default function ScoreEntry({
         resultSetId = newSet.id;
       }
 
-      // STEP 3: Insert result entry.
       currentStep = "Saving result entry";
 
       const isIndividual =
@@ -192,7 +188,7 @@ export default function ScoreEntry({
         group_id: isIndividual ? null : targetId,
         position: Number(position),
         grade,
-        points: totalPoints,
+        points: Number(points),
       };
 
       const { error: insertError } = await supabase
@@ -203,28 +199,16 @@ export default function ScoreEntry({
 
       setMessageType("success");
       setMessage(
-        `Result saved successfully! ${totalPoints} points awarded.`
+        `Result saved successfully! ${points} points awarded.`
       );
 
       setTargetId("");
       setPosition("1");
       setGrade("A");
+      setPoints("10");
     } catch (error: unknown) {
       console.error("RESULT SAVE ERROR:", error);
       console.error("FAILED STEP:", currentStep);
-
-      if (typeof error === "object" && error !== null) {
-        console.error(
-          "ERROR DETAILS:",
-          Object.getOwnPropertyNames(error).reduce(
-            (result, key) => {
-              result[key] = (error as Record<string, unknown>)[key];
-              return result;
-            },
-            {} as Record<string, unknown>
-          )
-        );
-      }
 
       setMessageType("error");
       setMessage(
@@ -254,11 +238,60 @@ export default function ScoreEntry({
         >
           <option value="">Select competition</option>
 
-          {competitions.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
+          {competitionSections.map((section) => {
+            const sectionCompetitions = competitions.filter(
+              (item) =>
+                item.competition_section === section.value
+            );
+
+            if (sectionCompetitions.length === 0) {
+              return null;
+            }
+
+            return (
+              <optgroup key={section.value} label={section.label}>
+                {sectionCompetitions.map((item) => {
+                  const categoryLabel =
+                    item.category_names.length > 0
+                      ? item.category_names.join(", ").toUpperCase()
+                      : "CATEGORY NOT ASSIGNED";
+
+                  return (
+                    <option key={item.id} value={item.id}>
+                      {item.name} — {categoryLabel}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            );
+          })}
+
+          {competitions.some(
+            (item) =>
+              !competitionSections.some(
+                (section) =>
+                  section.value === item.competition_section
+              )
+          ) && (
+            <optgroup label="OTHER">
+              {competitions
+                .filter(
+                  (item) =>
+                    !competitionSections.some(
+                      (section) =>
+                        section.value === item.competition_section
+                    )
+                )
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} —{" "}
+                    {item.category_names.length > 0
+                      ? item.category_names.join(", ").toUpperCase()
+                      : "CATEGORY NOT ASSIGNED"}
+                  </option>
+                ))}
+            </optgroup>
+          )}
         </select>
       </div>
 
@@ -319,9 +352,9 @@ export default function ScoreEntry({
             required
             className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
           >
-            <option value="1">1st Place (5 points)</option>
-            <option value="2">2nd Place (3 points)</option>
-            <option value="3">3rd Place (1 point)</option>
+            <option value="1">1st Place</option>
+            <option value="2">2nd Place</option>
+            <option value="3">3rd Place</option>
           </select>
         </div>
 
@@ -336,11 +369,33 @@ export default function ScoreEntry({
             required
             className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
           >
-            <option value="A">A Grade (5 points)</option>
-            <option value="B">B Grade (3 points)</option>
-            <option value="C">C Grade (1 point)</option>
+            <option value="A">A Grade</option>
+            <option value="B">B Grade</option>
+            <option value="C">C Grade</option>
           </select>
         </div>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-sm text-gray-300">
+          Points (Manual Entry)
+        </label>
+
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={points}
+          onChange={(e) => setPoints(e.target.value)}
+          required
+          placeholder="Enter points"
+          className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
+        />
+
+        <p className="mt-2 text-xs text-gray-400">
+          Enter the points manually. Position and Grade will not
+          automatically change the points.
+        </p>
       </div>
 
       <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-4">
@@ -351,8 +406,7 @@ export default function ScoreEntry({
         </p>
 
         <p className="mt-1 text-xs text-gray-400">
-          Position: {positionPoints[position]} + Grade:{" "}
-          {gradePoints[grade]}
+          Manually entered points
         </p>
       </div>
 

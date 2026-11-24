@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useMemo, useState } from "react";
@@ -5,6 +6,8 @@ import { useRouter } from "next/navigation";
 import {
   registerParticipant,
   removeRegistration,
+  registerGroup,
+  removeGroup,
 } from "./actions";
 
 type Participant = {
@@ -13,6 +16,7 @@ type Participant = {
   tag_number: string;
   category_id: string;
   category_name: string;
+  team_id: string | null;
   team_name: string;
 };
 
@@ -30,30 +34,67 @@ type Registration = {
   participant_id: string;
 };
 
+type Team = {
+  id: string;
+  name: string;
+};
+
+type Group = {
+  id: string;
+  competition_id: string;
+  team_id: string;
+  group_name: string;
+  participant_ids: string[];
+};
+
 type Props = {
   participants: Participant[];
   competitions: Competition[];
   registrations: Registration[];
   categories: { id: string; name: string }[];
+  teams: Team[];
+  groups: Group[];
   error?: boolean;
 };
 
 export default function RegistrationsClient({
-  participants,
-  competitions,
-  registrations,
-  categories,
+  participants = [],
+  competitions = [],
+  registrations = [],
+  categories = [],
+  teams = [],
+  groups = [],
   error = false,
 }: Props) {
   const router = useRouter();
 
+  // --------------------------------------------------
+  // INDIVIDUAL REGISTRATION STATE
+  // --------------------------------------------------
+
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All Categories");
-  const [team, setTeam] = useState("All Teams");
+  const [teamId, setTeamId] = useState("All Teams");
   const [participantId, setParticipantId] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // --------------------------------------------------
+  // GROUP REGISTRATION STATE
+  // --------------------------------------------------
+
+  const [groupCompetitionId, setGroupCompetitionId] = useState("");
+  const [groupTeamId, setGroupTeamId] = useState("");
+  const [groupName, setGroupName] = useState("");
+  const [groupParticipantIds, setGroupParticipantIds] = useState<string[]>([]);
+
+  // --------------------------------------------------
+  // UI STATE
+  // --------------------------------------------------
+
   const [submitting, setSubmitting] = useState(false);
+  const [groupSubmitting, setGroupSubmitting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [removingGroupId, setRemovingGroupId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageError, setMessageError] = useState(false);
 
@@ -61,32 +102,42 @@ export default function RegistrationsClient({
     (item) => item.id === participantId
   );
 
+  // --------------------------------------------------
+  // FILTER PARTICIPANTS
+  // --------------------------------------------------
+
   const filteredParticipants = useMemo(() => {
     const searchValue = search.trim().toLowerCase();
 
     return participants.filter((item) => {
       const matchesSearch =
-        item.full_name.toLowerCase().includes(searchValue) ||
-        item.tag_number.toLowerCase().includes(searchValue);
+        (item.full_name || "").toLowerCase().includes(searchValue) ||
+        (item.tag_number || "").toLowerCase().includes(searchValue);
 
       const matchesCategory =
         category === "All Categories" ||
         item.category_name === category;
 
       const matchesTeam =
-        team === "All Teams" || item.team_name === team;
+        teamId === "All Teams" || item.team_id === teamId;
 
       return matchesSearch && matchesCategory && matchesTeam;
     });
-  }, [participants, search, category, team]);
+  }, [participants, search, category, teamId]);
+
+  // --------------------------------------------------
+  // ELIGIBLE INDIVIDUAL COMPETITIONS
+  // --------------------------------------------------
 
   const eligibleCompetitions = useMemo(() => {
     if (!selectedParticipant?.category_id) return [];
 
-    return competitions.filter((competition) =>
-      competition.eligible_category_ids.includes(
-        selectedParticipant.category_id
-      )
+    return competitions.filter(
+      (competition) =>
+        competition.competition_type === "INDIVIDUAL" &&
+        (competition.eligible_category_ids || []).includes(
+          selectedParticipant.category_id
+        )
     );
   }, [competitions, selectedParticipant]);
 
@@ -102,16 +153,6 @@ export default function RegistrationsClient({
     (item) => !registeredIds.has(item.id)
   );
 
-  const totalRegistered = registrations.length;
-
-  const teams = Array.from(
-    new Set(
-      participants
-        .map((item) => item.team_name)
-        .filter(Boolean)
-    )
-  );
-
   function toggleCompetition(id: string) {
     setSelectedIds((previous) =>
       previous.includes(id)
@@ -125,6 +166,10 @@ export default function RegistrationsClient({
     setSelectedIds([]);
     setMessage("");
   }
+
+  // --------------------------------------------------
+  // REGISTER INDIVIDUAL PARTICIPANT
+  // --------------------------------------------------
 
   async function handleRegister() {
     if (!participantId || selectedIds.length === 0) {
@@ -151,19 +196,25 @@ export default function RegistrationsClient({
       }
     } catch (err) {
       console.error("Registration error:", err);
-      setMessage("Something went wrong. Please try again.");
+      setMessage("Something went wrong while registering.");
       setMessageError(true);
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function handleRemove(registrationId: string) {
-    const confirmed = window.confirm(
-      "Are you sure you want to remove this competition registration?"
-    );
+  // --------------------------------------------------
+  // REMOVE INDIVIDUAL REGISTRATION
+  // --------------------------------------------------
 
-    if (!confirmed) return;
+  async function handleRemove(registrationId: string) {
+    if (
+      !window.confirm(
+        "Are you sure you want to remove this competition registration?"
+      )
+    ) {
+      return;
+    }
 
     setRemovingId(registrationId);
     setMessage("");
@@ -186,9 +237,188 @@ export default function RegistrationsClient({
     }
   }
 
+  // --------------------------------------------------
+  // GROUP REGISTRATION
+  // --------------------------------------------------
+
+  const groupCompetitions = competitions.filter(
+    (competition) => competition.competition_type === "GROUP"
+  );
+
+  const groupTeamParticipants = participants.filter(
+    (participant) => participant.team_id === groupTeamId
+  );
+
+  const selectedGroupCompetition = groupCompetitions.find(
+    (competition) => competition.id === groupCompetitionId
+  );
+
+  const eligibleGroupParticipants = groupTeamParticipants.filter(
+    (participant) =>
+      (selectedGroupCompetition?.eligible_category_ids || []).includes(
+        participant.category_id
+      ) &&
+      !groups.some(
+        (group) =>
+          group.competition_id === groupCompetitionId &&
+          group.participant_ids.includes(participant.id)
+      )
+  );
+
+  function toggleGroupParticipant(id: string) {
+    setGroupParticipantIds((previous) =>
+      previous.includes(id)
+        ? previous.filter((item) => item !== id)
+        : [...previous, id]
+    );
+  }
+
+  function resetGroupForm() {
+    setGroupCompetitionId("");
+    setGroupTeamId("");
+    setGroupName("");
+    setGroupParticipantIds([]);
+  }
+
+  // --------------------------------------------------
+  // REGISTER GROUP
+  // --------------------------------------------------
+
+  async function handleGroupRegister() {
+    if (
+      !groupCompetitionId ||
+      !groupTeamId ||
+      !groupName.trim() ||
+      groupParticipantIds.length === 0
+    ) {
+      setMessage("Please complete all group registration fields.");
+      setMessageError(true);
+      return;
+    }
+
+    setGroupSubmitting(true);
+    setMessage("");
+
+    try {
+      const result = await registerGroup(
+        groupCompetitionId,
+        groupTeamId,
+        groupName,
+        groupParticipantIds
+      );
+
+      setMessage(result.message);
+      setMessageError(!result.success);
+
+      if (result.success) {
+        resetGroupForm();
+        router.refresh();
+      }
+    } catch (err) {
+      console.error("Group registration error:", err);
+      setMessage("Something went wrong while registering the group.");
+      setMessageError(true);
+    } finally {
+      setGroupSubmitting(false);
+    }
+  }
+
+  // --------------------------------------------------
+  // REMOVE GROUP
+  // --------------------------------------------------
+
+  async function handleRemoveGroup(groupId: string) {
+    if (
+      !window.confirm(
+        "Are you sure you want to remove this group registration?"
+      )
+    ) {
+      return;
+    }
+
+    setRemovingGroupId(groupId);
+    setMessage("");
+
+    try {
+      const result = await removeGroup(groupId);
+
+      setMessage(result.message);
+      setMessageError(!result.success);
+
+      if (result.success) {
+        router.refresh();
+      }
+    } catch (err) {
+      console.error("Remove group error:", err);
+      setMessage("Could not remove group.");
+      setMessageError(true);
+    } finally {
+      setRemovingGroupId(null);
+    }
+  }
+
+  // --------------------------------------------------
+  // GROUP INDIVIDUAL REGISTRATIONS BY PARTICIPANT
+  // --------------------------------------------------
+
+  const groupedIndividualRegistrations = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        participant: Participant;
+        competitions: {
+          registrationId: string;
+          competition: Competition;
+        }[];
+      }
+    >();
+
+    registrations.forEach((registration) => {
+      const participant = participants.find(
+        (item) => item.id === registration.participant_id
+      );
+
+      const competition = competitions.find(
+        (item) => item.id === registration.competition_id
+      );
+
+      if (!participant || !competition) return;
+
+      if (!grouped.has(participant.id)) {
+        grouped.set(participant.id, {
+          participant,
+          competitions: [],
+        });
+      }
+
+      grouped.get(participant.id)!.competitions.push({
+        registrationId: registration.id,
+        competition,
+      });
+    });
+
+    return Array.from(grouped.values()).sort((a, b) =>
+      a.participant.full_name.localeCompare(
+        b.participant.full_name
+      )
+    );
+  }, [registrations, participants, competitions]);
+
+  // --------------------------------------------------
+  // STATISTICS
+  // --------------------------------------------------
+
+  const totalRegistered = registrations.length;
+  const totalGroups = groups.length;
+
+  // --------------------------------------------------
+  // UI
+  // --------------------------------------------------
+
   return (
     <main className="min-h-screen bg-[#0b0b0b] px-5 py-12 text-white sm:px-8">
       <div className="mx-auto max-w-7xl">
+
         <a
           href="/admin/dashboard"
           className="text-sm text-green-400 hover:text-green-300"
@@ -206,27 +436,24 @@ export default function RegistrationsClient({
           </h1>
 
           <p className="mt-2 text-gray-400">
-            Register participants for eligible festival competitions.
+            Manage individual and group competition registrations.
           </p>
         </div>
 
         {/* STATISTICS */}
 
-        <div className="mt-8 grid gap-5 sm:grid-cols-3">
+        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Total Participants" value={participants.length} />
+          <StatCard label="Total Competitions" value={competitions.length} />
           <StatCard
-            label="Total Participants"
-            value={participants.length}
-          />
-
-          <StatCard
-            label="Total Competitions"
-            value={competitions.length}
-          />
-
-          <StatCard
-            label="Total Registrations"
+            label="Individual Registrations"
             value={totalRegistered}
             color="text-green-400"
+          />
+          <StatCard
+            label="Group Registrations"
+            value={totalGroups}
+            color="text-blue-400"
           />
         </div>
 
@@ -236,7 +463,10 @@ export default function RegistrationsClient({
           </div>
         ) : (
           <>
+            {/* INDIVIDUAL REGISTRATION */}
+
             <div className="mt-10 grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+
               {/* PARTICIPANT SELECTION */}
 
               <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-6">
@@ -254,8 +484,6 @@ export default function RegistrationsClient({
                   placeholder="Search name or tag number..."
                   className="mt-6 w-full rounded-lg border border-white/10 bg-black/40 px-4 py-3 outline-none focus:border-green-500"
                 />
-
-                {/* FILTERS */}
 
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <select
@@ -275,21 +503,19 @@ export default function RegistrationsClient({
                   </select>
 
                   <select
-                    value={team}
-                    onChange={(e) => setTeam(e.target.value)}
+                    value={teamId}
+                    onChange={(e) => setTeamId(e.target.value)}
                     className="min-w-0 rounded-lg border border-white/10 bg-[#171717] px-3 py-3 text-sm"
                   >
                     <option value="All Teams">All Teams</option>
 
                     {teams.map((item) => (
-                      <option key={item} value={item}>
-                        {item}
+                      <option key={item.id} value={item.id}>
+                        {item.name}
                       </option>
                     ))}
                   </select>
                 </div>
-
-                {/* PARTICIPANT LIST */}
 
                 <div className="mt-5 max-h-[430px] space-y-2 overflow-y-auto">
                   {filteredParticipants.length === 0 ? (
@@ -301,9 +527,7 @@ export default function RegistrationsClient({
                       <button
                         type="button"
                         key={participant.id}
-                        onClick={() =>
-                          selectParticipant(participant.id)
-                        }
+                        onClick={() => selectParticipant(participant.id)}
                         className={`w-full rounded-xl border p-4 text-left transition ${
                           participantId === participant.id
                             ? "border-green-500 bg-green-500/10"
@@ -350,7 +574,7 @@ export default function RegistrationsClient({
                 </h2>
 
                 <p className="mt-2 text-sm text-gray-400">
-                  Only competitions available for the selected participant's category are shown.
+                  Only individual competitions available for the selected participant&apos;s category are shown.
                 </p>
 
                 {!selectedParticipant ? (
@@ -392,11 +616,11 @@ export default function RegistrationsClient({
                     <div className="mt-3 max-h-[330px] space-y-2 overflow-y-auto">
                       {eligibleCompetitions.length === 0 ? (
                         <p className="py-12 text-center text-gray-500">
-                          No competitions are linked to this category.
+                          No individual competitions are linked to this category.
                         </p>
                       ) : availableCompetitions.length === 0 ? (
                         <p className="py-12 text-center text-green-400">
-                          All eligible competitions have been registered.
+                          All eligible individual competitions have been registered.
                         </p>
                       ) : (
                         availableCompetitions.map((competition) => (
@@ -410,12 +634,8 @@ export default function RegistrationsClient({
                           >
                             <input
                               type="checkbox"
-                              checked={selectedIds.includes(
-                                competition.id
-                              )}
-                              onChange={() =>
-                                toggleCompetition(competition.id)
-                              }
+                              checked={selectedIds.includes(competition.id)}
+                              onChange={() => toggleCompetition(competition.id)}
                               className="h-5 w-5 accent-green-500"
                             />
 
@@ -425,7 +645,7 @@ export default function RegistrationsClient({
                               </p>
 
                               <p className="mt-1 text-xs text-gray-400">
-                                {competition.competition_type || "Competition"}
+                                {competition.competition_type}
                                 {" · "}
                                 {competition.status || "No status"}
                               </p>
@@ -434,8 +654,6 @@ export default function RegistrationsClient({
                         ))
                       )}
                     </div>
-
-                    {/* REGISTER BUTTON */}
 
                     <div className="mt-5 rounded-xl bg-black/30 p-4">
                       <div className="flex items-center justify-between">
@@ -451,9 +669,7 @@ export default function RegistrationsClient({
                       <button
                         type="button"
                         onClick={handleRegister}
-                        disabled={
-                          submitting || selectedIds.length === 0
-                        }
+                        disabled={submitting || selectedIds.length === 0}
                         className="mt-4 w-full rounded-lg bg-green-500 px-5 py-3 font-bold text-black transition hover:bg-green-400 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {submitting
@@ -466,98 +682,314 @@ export default function RegistrationsClient({
               </section>
             </div>
 
-            {/* EXISTING REGISTRATIONS */}
+            {/* GROUP REGISTRATION */}
 
             <section className="mt-10 rounded-2xl border border-white/10 bg-white/[0.04] p-6">
               <h2 className="text-xl font-bold">
-                03. Existing Registrations
+                03. Group Registration
               </h2>
 
               <p className="mt-2 text-sm text-gray-400">
-                View and manage competition registrations.
+                Register a team group for an eligible group competition.
               </p>
 
-              <div className="mt-6 overflow-x-auto">
-                <table className="w-full min-w-[650px] text-left">
-                  <thead>
-                    <tr className="border-b border-white/10 text-xs text-gray-400">
-                      <th className="px-3 py-4">TAG</th>
-                      <th className="px-3 py-4">PARTICIPANT</th>
-                      <th className="px-3 py-4">COMPETITION</th>
-                      <th className="px-3 py-4">CATEGORY</th>
-                      <th className="px-3 py-4">ACTION</th>
-                    </tr>
-                  </thead>
+              <div className="mt-6 grid gap-4 md:grid-cols-3">
+                <div>
+                  <label className="mb-2 block text-sm text-gray-400">
+                    Competition
+                  </label>
 
-                  <tbody>
-                    {registrations.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={5}
-                          className="py-16 text-center text-gray-500"
-                        >
-                          No participants are registered for any competition yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      registrations.map((registration) => {
-                        const participant = participants.find(
-                          (item) =>
-                            item.id === registration.participant_id
-                        );
+                  <select
+                    value={groupCompetitionId}
+                    onChange={(e) => {
+                      setGroupCompetitionId(e.target.value);
+                      setGroupParticipantIds([]);
+                    }}
+                    className="w-full rounded-lg border border-white/10 bg-[#171717] px-3 py-3 text-sm"
+                  >
+                    <option value="">Choose competition</option>
 
-                        const competition = competitions.find(
-                          (item) =>
-                            item.id === registration.competition_id
-                        );
+                    {groupCompetitions.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                        if (!participant || !competition) return null;
+                <div>
+                  <label className="mb-2 block text-sm text-gray-400">
+                    Team
+                  </label>
 
-                        return (
-                          <tr
-                            key={registration.id}
-                            className="border-b border-white/5"
-                          >
-                            <td className="px-3 py-4 font-mono text-green-400">
-                              {participant.tag_number || "—"}
-                            </td>
+                  <select
+                    value={groupTeamId}
+                    onChange={(e) => {
+                      setGroupTeamId(e.target.value);
+                      setGroupParticipantIds([]);
+                    }}
+                    className="w-full rounded-lg border border-white/10 bg-[#171717] px-3 py-3 text-sm"
+                  >
+                    <option value="">Choose team</option>
 
-                            <td className="px-3 py-4 font-medium">
-                              {participant.full_name}
-                            </td>
+                    {teams.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                            <td className="px-3 py-4 text-gray-300">
-                              {competition.name}
-                            </td>
+                <div>
+                  <label className="mb-2 block text-sm text-gray-400">
+                    Group Name
+                  </label>
 
-                            <td className="px-3 py-4 text-gray-400">
-                              {participant.category_name}
-                            </td>
+                  <input
+                    value={groupName}
+                    onChange={(e) => setGroupName(e.target.value)}
+                    maxLength={100}
+                    placeholder="Enter group name"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-4 py-3 outline-none focus:border-green-500"
+                  />
+                </div>
+              </div>
 
-                            <td className="px-3 py-4">
+              <div className="mt-6">
+                <div className="flex items-center justify-between">
+                  <p className="font-semibold">Select Group Members</p>
+
+                  <span className="text-xs text-gray-400">
+                    {groupParticipantIds.length} selected
+                  </span>
+                </div>
+
+                {!groupCompetitionId || !groupTeamId ? (
+                  <p className="mt-4 rounded-xl border border-dashed border-white/20 p-8 text-center text-gray-500">
+                    Select a competition and team to see eligible participants.
+                  </p>
+                ) : eligibleGroupParticipants.length === 0 ? (
+                  <p className="mt-4 rounded-xl border border-dashed border-white/20 p-8 text-center text-gray-500">
+                    No eligible participants available for this group.
+                  </p>
+                ) : (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {eligibleGroupParticipants.map((participant) => (
+                      <label
+                        key={participant.id}
+                        className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 ${
+                          groupParticipantIds.includes(participant.id)
+                            ? "border-blue-500 bg-blue-500/10"
+                            : "border-white/10"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={groupParticipantIds.includes(participant.id)}
+                          onChange={() =>
+                            toggleGroupParticipant(participant.id)
+                          }
+                          className="h-4 w-4 accent-blue-500"
+                        />
+
+                        <span className="text-sm">
+                          {participant.full_name}
+                          <span className="block text-xs text-gray-500">
+                            {participant.tag_number}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGroupRegister}
+                disabled={
+                  groupSubmitting ||
+                  !groupCompetitionId ||
+                  !groupTeamId ||
+                  !groupName.trim() ||
+                  groupParticipantIds.length === 0
+                }
+                className="mt-6 w-full rounded-lg bg-blue-500 px-5 py-3 font-bold text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
+              >
+                {groupSubmitting ? "Registering Group..." : "Register Group"}
+              </button>
+            </section>
+
+            {/* EXISTING INDIVIDUAL REGISTRATIONS - GROUPED VIEW */}
+
+            <section className="mt-10 rounded-2xl border border-white/10 bg-white/[0.04] p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-bold">
+                    04. Existing Individual Registrations
+                  </h2>
+
+                  <p className="mt-2 text-sm text-gray-400">
+                    View and manage registrations participant-wise.
+                  </p>
+                </div>
+
+                <div className="rounded-lg border border-green-500/20 bg-green-500/10 px-4 py-2">
+                  <p className="text-xs text-gray-400">
+                    Registered Participants
+                  </p>
+
+                  <p className="text-xl font-bold text-green-400">
+                    {groupedIndividualRegistrations.length}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-6 space-y-4">
+                {groupedIndividualRegistrations.length === 0 ? (
+                  <div className="py-16 text-center text-gray-500">
+                    No individual registrations yet.
+                  </div>
+                ) : (
+                  groupedIndividualRegistrations.map((item) => (
+                    <div
+                      key={item.participant.id}
+                      className="overflow-hidden rounded-xl border border-white/10 bg-black/30"
+                    >
+                      {/* PARTICIPANT DETAILS */}
+
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/[0.03] p-4">
+                        <div>
+                          <h3 className="font-bold text-white">
+                            {item.participant.full_name}
+                          </h3>
+
+                          <p className="mt-1 text-xs text-gray-400">
+                            TAG: {item.participant.tag_number || "—"}
+                            {" · "}
+                            {item.participant.category_name || "No category"}
+                            {" · "}
+                            {item.participant.team_name || "No team"}
+                          </p>
+                        </div>
+
+                        <span className="rounded-full border border-green-500/20 bg-green-500/10 px-3 py-1 text-xs font-semibold text-green-400">
+                          {item.competitions.length} Competitions
+                        </span>
+                      </div>
+
+                      {/* REGISTERED COMPETITIONS */}
+
+                      <div className="p-4">
+                        <p className="mb-3 text-xs font-semibold tracking-wider text-gray-500">
+                          REGISTERED COMPETITIONS
+                        </p>
+
+                        <div className="space-y-2">
+                          {item.competitions.map((entry) => (
+                            <div
+                              key={entry.registrationId}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/[0.02] px-4 py-3"
+                            >
+                              <div className="flex min-w-0 items-center gap-3">
+                                <span className="text-green-400">✓</span>
+
+                                <span className="text-sm font-medium text-gray-200">
+                                  {entry.competition.name}
+                                </span>
+                              </div>
+
                               <button
                                 type="button"
                                 disabled={removingId !== null}
                                 onClick={() =>
-                                  handleRemove(registration.id)
+                                  handleRemove(entry.registrationId)
                                 }
-                                className="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                                className="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-400 transition hover:bg-red-500/10 disabled:opacity-50"
                               >
-                                {removingId === registration.id
+                                {removingId === entry.registrationId
                                   ? "Removing..."
                                   : "Remove"}
                               </button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            {/* EXISTING GROUPS */}
+
+            <section className="mt-10 rounded-2xl border border-white/10 bg-white/[0.04] p-6">
+              <h2 className="text-xl font-bold">
+                05. Existing Groups
+              </h2>
+
+              <div className="mt-6 space-y-3">
+                {groups.length === 0 ? (
+                  <p className="py-10 text-center text-gray-500">
+                    No groups registered yet.
+                  </p>
+                ) : (
+                  groups.map((group) => {
+                    const competition = competitions.find(
+                      (item) => item.id === group.competition_id
+                    );
+
+                    const team = teams.find(
+                      (item) => item.id === group.team_id
+                    );
+
+                    const members = participants.filter(
+                      (item) => group.participant_ids.includes(item.id)
+                    );
+
+                    return (
+                      <div
+                        key={group.id}
+                        className="rounded-xl border border-white/10 bg-black/30 p-4"
+                      >
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div>
+                            <p className="font-bold">{group.group_name}</p>
+
+                            <p className="mt-1 text-xs text-gray-400">
+                              {competition?.name || "Unknown competition"}
+                              {" · "}
+                              {team?.name || "Unknown team"}
+                            </p>
+
+                            <p className="mt-2 text-sm text-gray-300">
+                              {members
+                                .map((member) => member.full_name)
+                                .join(", ")}
+                            </p>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={removingGroupId !== null}
+                            onClick={() => handleRemoveGroup(group.id)}
+                            className="rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                          >
+                            {removingGroupId === group.id
+                              ? "Removing..."
+                              : "Remove Group"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </section>
           </>
         )}
+
+        {/* SUCCESS / ERROR MESSAGE */}
 
         {message && (
           <div
@@ -574,6 +1006,10 @@ export default function RegistrationsClient({
     </main>
   );
 }
+
+// --------------------------------------------------
+// STAT CARD
+// --------------------------------------------------
 
 function StatCard({
   label,

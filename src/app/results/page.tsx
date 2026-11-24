@@ -7,8 +7,14 @@ type ResultEntry = {
   id: string;
   position: number | null;
   points: number;
-  participant: { full_name: string } | null;
-  group: { group_name: string } | null;
+  participant: {
+    full_name: string;
+    team_id: string | null;
+  } | null;
+  group: {
+    group_name: string;
+    team_id: string | null;
+  } | null;
 };
 
 type ResultSet = {
@@ -22,50 +28,84 @@ async function ResultsData() {
 
   const supabase = await createClient();
 
-  const { data, error } = await supabase
-    .from("result_sets")
-    .select(`
-      id,
-      competition:competitions (
-        name
-      ),
-      result_entries (
+  const [
+    { data, error },
+    { data: teamRows, error: teamError },
+  ] = await Promise.all([
+    supabase
+      .from("result_sets")
+      .select(`
         id,
-        position,
-        points,
-        participant:participants (
-          full_name
+        competition:competitions (
+          name
         ),
-        group:competition_groups (
-          group_name
+        result_entries (
+          id,
+          position,
+          points,
+          participant:participants (
+            full_name,
+            team_id
+          ),
+          group:competition_groups (
+            group_name,
+            team_id
+          )
         )
-      )
-    `)
-    .eq("status", "PUBLISHED")
-    .order("published_at", { ascending: false });
+      `)
+      .eq("status", "PUBLISHED")
+      .order("published_at", { ascending: false }),
+
+    supabase
+      .from("teams")
+      .select("id, name"),
+  ]);
 
   const resultSets = (data ?? []) as unknown as ResultSet[];
+
+  const teamById = new Map(
+    (teamRows ?? []).map((team: any) => [
+      team.id,
+      team.name,
+    ])
+  );
 
   const competitions = resultSets
     .map((item) => ({
       id: item.id,
       name: item.competition?.name ?? "Competition",
+
       entries: (item.result_entries ?? [])
         .filter(
           (entry) =>
             entry.position !== null &&
             [1, 2, 3].includes(entry.position)
         )
-        .sort((a, b) => a.position! - b.position!)
-        .map((entry) => ({
-          id: entry.id,
-          position: entry.position!,
-          name:
-            entry.participant?.full_name ??
-            entry.group?.group_name ??
-            "Unknown",
-          points: Number(entry.points),
-        })),
+        .sort(
+          (a, b) => (a.position ?? 0) - (b.position ?? 0)
+        )
+        .map((entry) => {
+          const teamId =
+            entry.participant?.team_id ??
+            entry.group?.team_id ??
+            null;
+
+          return {
+            id: entry.id,
+            position: entry.position!,
+
+            name:
+              entry.participant?.full_name ??
+              entry.group?.group_name ??
+              "Unknown",
+
+            team_name: teamId
+              ? teamById.get(teamId) ?? "-"
+              : "-",
+
+            points: Number(entry.points),
+          };
+        }),
     }))
     .filter((item) => item.entries.length > 0);
 
@@ -85,7 +125,7 @@ async function ResultsData() {
           across SAFA ARTS FEST 2K27.
         </p>
 
-        {error ? (
+        {error || teamError ? (
           <div className="mt-10 rounded-xl border border-red-500/30 bg-red-500/10 p-8 text-center">
             <p className="text-red-400">
               Unable to load results. Please try again later.
@@ -96,6 +136,7 @@ async function ResultsData() {
             <h2 className="text-xl font-semibold text-gray-300">
               Results will appear here.
             </h2>
+
             <p className="mt-3 text-sm text-gray-500">
               Only officially published results will be displayed.
             </p>
@@ -112,13 +153,21 @@ async function ResultsData() {
                 </h2>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                  <table className="w-full min-w-[600px] text-left">
                     <thead>
                       <tr className="border-b border-white/10 text-xs tracking-wider text-gray-500">
                         <th className="px-5 py-4 sm:px-7">
                           POSITION
                         </th>
-                        <th className="px-5 py-4">NAME</th>
+
+                        <th className="px-5 py-4">
+                          NAME
+                        </th>
+
+                        <th className="px-5 py-4">
+                          TEAM NAME
+                        </th>
+
                         <th className="px-5 py-4 text-right sm:px-7">
                           POINTS
                         </th>
@@ -143,7 +192,11 @@ async function ResultsData() {
                             {entry.name}
                           </td>
 
-                          <td className="px-5 py-5 text-right font-bold text-white sm:px-7">
+                          <td className="px-5 py-5 text-gray-300">
+                            {entry.team_name}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-5 text-right font-bold text-white sm:px-7">
                             {entry.points} Points
                           </td>
                         </tr>

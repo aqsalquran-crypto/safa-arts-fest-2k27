@@ -15,7 +15,7 @@ const VALID_COMPETITION_CATEGORIES = [
   "BIDAYA",
   "THANAVIYYA",
   "ALIYA",
-  "KULLIYA",
+  "KULLIYYA",
 ] as const;
 
 const VALID_SECTIONS = [
@@ -31,15 +31,20 @@ export async function addCompetition(
   try {
     const supabase = await createClient();
 
+    // Verify signed-in user
     const {
       data: { user },
       error: authError,
     } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      return { success: false, message: "Please log in again." };
+      return {
+        success: false,
+        message: "Please log in again.",
+      };
     }
 
+    // Verify admin access
     const { data: admin, error: adminError } = await supabase
       .from("admin_profiles")
       .select("id")
@@ -47,33 +52,36 @@ export async function addCompetition(
       .maybeSingle();
 
     if (adminError || !admin) {
-      return { success: false, message: "Admin access denied." };
+      return {
+        success: false,
+        message: "Admin access denied.",
+      };
     }
 
-    const name = String(formData.get("name") ?? "").trim();
+    // Read form values
+    const name = String(
+      formData.get("name") ?? ""
+    ).trim();
 
     const competitionCategory = String(
       formData.get("competition_category") ?? ""
-    ).trim().toUpperCase();
+    )
+      .trim()
+      .toUpperCase();
 
     const competitionSection = String(
       formData.get("competition_section") ?? ""
-    ).trim().toUpperCase();
+    )
+      .trim()
+      .toUpperCase();
 
     const competitionType = String(
       formData.get("competition_type") ?? ""
-    ).trim().toUpperCase();
+    )
+      .trim()
+      .toUpperCase();
 
     const isPublic = formData.get("is_public") === "on";
-
-    const categoryIds = [
-      ...new Set(
-        formData
-          .getAll("category_ids")
-          .map((value) => String(value).trim())
-          .filter(Boolean)
-      ),
-    ];
 
     // Required field validation
     if (
@@ -91,7 +99,8 @@ export async function addCompetition(
     // Validate competition category
     if (
       !VALID_COMPETITION_CATEGORIES.includes(
-        competitionCategory as (typeof VALID_COMPETITION_CATEGORIES)[number]
+        competitionCategory as
+          (typeof VALID_COMPETITION_CATEGORIES)[number]
       )
     ) {
       return {
@@ -103,7 +112,8 @@ export async function addCompetition(
     // Validate competition section
     if (
       !VALID_SECTIONS.includes(
-        competitionSection as (typeof VALID_SECTIONS)[number]
+        competitionSection as
+          (typeof VALID_SECTIONS)[number]
       )
     ) {
       return {
@@ -115,7 +125,8 @@ export async function addCompetition(
     // Validate competition type
     if (
       !VALID_TYPES.includes(
-        competitionType as (typeof VALID_TYPES)[number]
+        competitionType as
+          (typeof VALID_TYPES)[number]
       )
     ) {
       return {
@@ -124,76 +135,109 @@ export async function addCompetition(
       };
     }
 
-    // Verify eligible categories
-    if (categoryIds.length > 0) {
-      const { data: categories, error: categoryError } = await supabase
+    // Determine eligible categories automatically
+    // KULLIYYA = General (all four categories)
+    // Other categories = only their own category
+
+    const requiredCategoryNames =
+      competitionCategory === "KULLIYYA"
+        ? [...VALID_COMPETITION_CATEGORIES]
+        : [competitionCategory];
+
+    // Fetch category IDs from database
+    const { data: allCategories, error: categoriesError } =
+      await supabase
         .from("categories")
-        .select("id")
-        .in("id", categoryIds);
+        .select("id, name")
+        .in("name", [...VALID_COMPETITION_CATEGORIES]);
 
-      if (categoryError) {
-        return {
-          success: false,
-          message: "Could not verify categories: " + categoryError.message,
-        };
-      }
-
-      if ((categories?.length ?? 0) !== categoryIds.length) {
-        return {
-          success: false,
-          message: "One or more selected categories are invalid.",
-        };
-      }
+    if (categoriesError) {
+      return {
+        success: false,
+        message:
+          "Could not load categories: " +
+          categoriesError.message,
+      };
     }
 
+    // Create category name-to-ID mapping
+    const categoryMap = new Map(
+      (allCategories ?? []).map((category) => [
+        category.name.trim().toUpperCase(),
+        category.id,
+      ])
+    );
+
+    // Check required categories exist
+    const missingCategories = requiredCategoryNames.filter(
+      (categoryName) => !categoryMap.has(categoryName)
+    );
+
+    if (missingCategories.length > 0) {
+      return {
+        success: false,
+        message:
+          "Missing categories: " +
+          missingCategories.join(", "),
+      };
+    }
+
+    // Automatically assign eligible category IDs
+    const categoryIds = requiredCategoryNames.map(
+      (categoryName) => categoryMap.get(categoryName)!
+    );
+
     // Insert competition
-    const { data: competition, error: competitionError } = await supabase
-      .from("competitions")
-      .insert({
-        name,
-        competition_category: competitionCategory,
-        competition_section: competitionSection,
-        competition_type: competitionType,
-        is_public: isPublic,
-      })
-      .select("id")
-      .single();
+    const { data: competition, error: competitionError } =
+      await supabase
+        .from("competitions")
+        .insert({
+          name,
+          competition_category: competitionCategory,
+          competition_section: competitionSection,
+          competition_type: competitionType,
+          is_public: isPublic,
+        })
+        .select("id")
+        .single();
 
     if (competitionError || !competition) {
       return {
         success: false,
         message:
-          competitionError?.message ?? "Could not create competition.",
+          competitionError?.message ??
+          "Could not create competition.",
       };
     }
 
     // Link eligible categories
-    if (categoryIds.length > 0) {
-      const links = categoryIds.map((categoryId) => ({
-        competition_id: competition.id,
-        category_id: categoryId,
-      }));
+    const links = categoryIds.map((categoryId) => ({
+      competition_id: competition.id,
+      category_id: categoryId,
+    }));
 
-      const { error: linkError } = await supabase
-        .from("competition_categories")
-        .insert(links);
+    const { error: linkError } = await supabase
+      .from("competition_categories")
+      .insert(links);
 
-      if (linkError) {
-        const { error: rollbackError } = await supabase
-          .from("competitions")
-          .delete()
-          .eq("id", competition.id);
+    // Roll back competition if category linking fails
+    if (linkError) {
+      const { error: rollbackError } = await supabase
+        .from("competitions")
+        .delete()
+        .eq("id", competition.id);
 
-        return {
-          success: false,
-          message: rollbackError
-            ? `Category linking failed: ${linkError.message}. Cleanup also failed: ${rollbackError.message}`
-            : `Could not save eligible categories: ${linkError.message}`,
-        };
-      }
+      return {
+        success: false,
+        message: rollbackError
+          ? `Category linking failed: ${linkError.message}. Cleanup also failed: ${rollbackError.message}`
+          : `Could not save eligible categories: ${linkError.message}`,
+      };
     }
 
+    // Refresh relevant pages
     revalidatePath("/admin/dashboard/competitions");
+    revalidatePath("/admin/dashboard/registrations");
     revalidatePath("/competitions");
 
     return {
@@ -218,7 +262,10 @@ export async function deleteCompetition(
   competitionId: string
 ): Promise<ActionResult> {
   try {
-    if (!competitionId || !/^[0-9a-f-]{36}$/i.test(competitionId)) {
+    if (
+      !competitionId ||
+      !/^[0-9a-f-]{36}$/i.test(competitionId)
+    ) {
       return {
         success: false,
         message: "Invalid competition ID.",
@@ -255,12 +302,13 @@ export async function deleteCompetition(
     }
 
     // Delete competition
-    const { data: deletedCompetition, error: deleteError } = await supabase
-      .from("competitions")
-      .delete()
-      .eq("id", competitionId)
-      .select("id")
-      .maybeSingle();
+    const { data: deletedCompetition, error: deleteError } =
+      await supabase
+        .from("competitions")
+        .delete()
+        .eq("id", competitionId)
+        .select("id")
+        .maybeSingle();
 
     if (deleteError) {
       if (deleteError.code === "23503") {
@@ -273,7 +321,9 @@ export async function deleteCompetition(
 
       return {
         success: false,
-        message: "Could not delete competition: " + deleteError.message,
+        message:
+          "Could not delete competition: " +
+          deleteError.message,
       };
     }
 
@@ -286,6 +336,7 @@ export async function deleteCompetition(
     }
 
     revalidatePath("/admin/dashboard/competitions");
+    revalidatePath("/admin/dashboard/registrations");
     revalidatePath("/competitions");
 
     return {
