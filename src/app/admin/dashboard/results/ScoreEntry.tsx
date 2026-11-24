@@ -34,10 +34,22 @@ type Props = {
   groups: CompetitionGroup[];
 };
 
+type PodiumEntry = {
+  targetId: string;
+  grade: string;
+  points: string;
+};
+
 const competitionSections = [
   { value: "STAGE", label: "STAGE" },
   { value: "OFF_STAGE", label: "OFF STAGE" },
   { value: "SPORTS", label: "SPORTS" },
+];
+
+const initialPodium: PodiumEntry[] = [
+  { targetId: "", grade: "", points: "10" },
+  { targetId: "", grade: "", points: "8" },
+  { targetId: "", grade: "", points: "6" },
 ];
 
 function getErrorMessage(error: unknown): string {
@@ -76,10 +88,9 @@ export default function ScoreEntry({
   groups,
 }: Props) {
   const [competitionId, setCompetitionId] = useState("");
-  const [targetId, setTargetId] = useState("");
-  const [position, setPosition] = useState("1");
-  const [grade, setGrade] = useState("A");
-  const [points, setPoints] = useState("10");
+  const [podium, setPodium] = useState<PodiumEntry[]>(
+    initialPodium.map((item) => ({ ...item }))
+  );
 
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -108,25 +119,55 @@ export default function ScoreEntry({
     [groups, competitionId]
   );
 
-  const totalPoints = Number(points) || 0;
+  function updatePodium(
+    index: number,
+    field: keyof PodiumEntry,
+    value: string
+  ) {
+    setPodium((previous) =>
+      previous.map((item, i) =>
+        i === index ? { ...item, [field]: value } : item
+      )
+    );
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    if (!competition || !targetId) {
+    if (!competition) {
       setMessageType("error");
-      setMessage("Please select a competition and participant/group.");
+      setMessage("Please select a competition.");
       return;
     }
 
-    if (
-      points.trim() === "" ||
-      !Number.isFinite(Number(points)) ||
-      Number(points) < 0
-    ) {
+    if (podium.some((item) => !item.targetId)) {
       setMessageType("error");
-      setMessage("Please enter valid points (0 or above).");
+      setMessage(
+        "Please select participants/groups for all three positions."
+      );
       return;
+    }
+
+    const selectedTargets = podium.map((item) => item.targetId);
+
+    if (new Set(selectedTargets).size !== selectedTargets.length) {
+      setMessageType("error");
+      setMessage(
+        "The same participant/group cannot be selected for multiple positions."
+      );
+      return;
+    }
+
+    for (const item of podium) {
+      if (
+        item.points.trim() === "" ||
+        !Number.isFinite(Number(item.points)) ||
+        Number(item.points) < 0
+      ) {
+        setMessageType("error");
+        setMessage("Please enter valid points (0 or above) for all positions.");
+        return;
+      }
     }
 
     setSaving(true);
@@ -177,35 +218,69 @@ export default function ScoreEntry({
         resultSetId = newSet.id;
       }
 
-      currentStep = "Saving result entry";
+      currentStep = "Saving podium results";
 
       const isIndividual =
         competition.competition_type === "INDIVIDUAL";
 
-      const entry = {
-        result_set_id: resultSetId,
-        participant_id: isIndividual ? targetId : null,
-        group_id: isIndividual ? null : targetId,
-        position: Number(position),
-        grade,
-        points: Number(points),
-      };
+      for (let index = 0; index < podium.length; index++) {
+        const item = podium[index];
 
-      const { error: insertError } = await supabase
-        .from("result_entries")
-        .insert(entry);
+        const entry = {
+          result_set_id: resultSetId,
+          participant_id: isIndividual ? item.targetId : null,
+          group_id: isIndividual ? null : item.targetId,
+          position: index + 1,
+          grade: item.grade || null,
+          points: Number(item.points),
+        };
 
-      if (insertError) throw insertError;
+        let existingEntryQuery = supabase
+          .from("result_entries")
+          .select("id")
+          .eq("result_set_id", resultSetId);
+
+        if (isIndividual) {
+          existingEntryQuery = existingEntryQuery.eq(
+            "participant_id",
+            item.targetId
+          );
+        } else {
+          existingEntryQuery = existingEntryQuery.eq(
+            "group_id",
+            item.targetId
+          );
+        }
+
+        const { data: existingEntry, error: existingEntryError } =
+          await existingEntryQuery.maybeSingle();
+
+        if (existingEntryError) throw existingEntryError;
+
+        if (existingEntry?.id) {
+          const { error: updateError } = await supabase
+            .from("result_entries")
+            .update(entry)
+            .eq("id", existingEntry.id);
+
+          if (updateError) throw updateError;
+        } else {
+          const { error: insertError } = await supabase
+            .from("result_entries")
+            .insert(entry);
+
+          if (insertError) throw insertError;
+        }
+      }
 
       setMessageType("success");
       setMessage(
-        `Result saved successfully! ${points} points awarded.`
+        "1st, 2nd and 3rd place results saved successfully!"
       );
 
-      setTargetId("");
-      setPosition("1");
-      setGrade("A");
-      setPoints("10");
+      setPodium(
+        initialPodium.map((item) => ({ ...item }))
+      );
     } catch (error: unknown) {
       console.error("RESULT SAVE ERROR:", error);
       console.error("FAILED STEP:", currentStep);
@@ -230,7 +305,9 @@ export default function ScoreEntry({
           value={competitionId}
           onChange={(e) => {
             setCompetitionId(e.target.value);
-            setTargetId("");
+            setPodium(
+              initialPodium.map((item) => ({ ...item }))
+            );
             setMessage("");
           }}
           required
@@ -296,133 +373,139 @@ export default function ScoreEntry({
       </div>
 
       {competition && (
-        <div>
-          <label className="mb-2 block text-sm text-gray-300">
-            {competition.competition_type === "INDIVIDUAL"
-              ? "Participant"
-              : "Group"}
-          </label>
+        <>
+          <div className="rounded-lg border border-white/10 bg-[#171717] p-4">
+            <p className="text-sm font-semibold text-gray-200">
+              {competition.name}
+            </p>
 
-          <select
-            value={targetId}
-            onChange={(e) => setTargetId(e.target.value)}
-            required
-            className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
-          >
-            <option value="">Select</option>
+            <p className="mt-1 text-xs text-gray-400">
+              {competition.competition_type === "INDIVIDUAL"
+                ? "Select the participants for each position."
+                : "Select the groups for each position."}
+            </p>
+          </div>
 
-            {competition.competition_type === "INDIVIDUAL"
-              ? availableParticipants.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.full_name} (Tag: {item.tag_number})
-                  </option>
-                ))
-              : availableGroups.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.group_name}
-                  </option>
-                ))}
-          </select>
+          {([1, 2, 3] as const).map((place, index) => {
+            const placeLabel =
+              place === 1
+                ? "1st Place"
+                : place === 2
+                ? "2nd Place"
+                : "3rd Place";
+
+            return (
+              <div
+                key={place}
+                className="space-y-4 rounded-xl border border-white/10 bg-[#202020] p-4"
+              >
+                <h3 className="text-lg font-bold text-white">
+                  {placeLabel}
+                </h3>
+
+                <div>
+                  <label className="mb-2 block text-sm text-gray-300">
+                    {competition.competition_type === "INDIVIDUAL"
+                      ? "Participant"
+                      : "Group"}
+                  </label>
+
+                  <select
+                    value={podium[index].targetId}
+                    onChange={(e) =>
+                      updatePodium(index, "targetId", e.target.value)
+                    }
+                    required
+                    className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
+                  >
+                    <option value="">Select</option>
+
+                    {competition.competition_type === "INDIVIDUAL"
+                      ? availableParticipants.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.full_name} (Tag: {item.tag_number})
+                          </option>
+                        ))
+                      : availableGroups.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.group_name}
+                          </option>
+                        ))}
+                  </select>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-sm text-gray-300">
+                      Grade (Optional)
+                    </label>
+
+                    <select
+                      value={podium[index].grade}
+                      onChange={(e) =>
+                        updatePodium(index, "grade", e.target.value)
+                      }
+                      className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
+                    >
+                      <option value="">No Grade</option>
+                      <option value="A">A Grade</option>
+                      <option value="B">B Grade</option>
+                      <option value="C">C Grade</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm text-gray-300">
+                      Points
+                    </label>
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={podium[index].points}
+                      onChange={(e) =>
+                        updatePodium(index, "points", e.target.value)
+                      }
+                      required
+                      placeholder="Enter points"
+                      className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           {competition.competition_type === "INDIVIDUAL" &&
-            availableParticipants.length === 0 && (
-              <p className="mt-2 text-sm text-yellow-400">
-                No participants are registered for this competition yet.
+            availableParticipants.length < 3 && (
+              <p className="text-sm text-yellow-400">
+                At least 3 registered participants are required to enter all three positions.
               </p>
             )}
 
           {competition.competition_type === "GROUP" &&
-            availableGroups.length === 0 && (
-              <p className="mt-2 text-sm text-yellow-400">
-                No groups have been created for this competition yet.
+            availableGroups.length < 3 && (
+              <p className="text-sm text-yellow-400">
+                At least 3 groups are required to enter all three positions.
               </p>
             )}
-        </div>
+        </>
       )}
-
-      <div className="grid gap-5 sm:grid-cols-2">
-        <div>
-          <label className="mb-2 block text-sm text-gray-300">
-            Position
-          </label>
-
-          <select
-            value={position}
-            onChange={(e) => setPosition(e.target.value)}
-            required
-            className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
-          >
-            <option value="1">1st Place</option>
-            <option value="2">2nd Place</option>
-            <option value="3">3rd Place</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-sm text-gray-300">
-            Grade
-          </label>
-
-          <select
-            value={grade}
-            onChange={(e) => setGrade(e.target.value)}
-            required
-            className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
-          >
-            <option value="A">A Grade</option>
-            <option value="B">B Grade</option>
-            <option value="C">C Grade</option>
-          </select>
-        </div>
-      </div>
-
-      <div>
-        <label className="mb-2 block text-sm text-gray-300">
-          Points (Manual Entry)
-        </label>
-
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={points}
-          onChange={(e) => setPoints(e.target.value)}
-          required
-          placeholder="Enter points"
-          className="w-full rounded-lg border border-white/10 bg-[#171717] p-3 text-white"
-        />
-
-        <p className="mt-2 text-xs text-gray-400">
-          Enter the points manually. Position and Grade will not
-          automatically change the points.
-        </p>
-      </div>
-
-      <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-4">
-        <p className="text-sm text-gray-300">Total Points</p>
-
-        <p className="mt-1 text-3xl font-bold text-green-400">
-          {totalPoints}
-        </p>
-
-        <p className="mt-1 text-xs text-gray-400">
-          Manually entered points
-        </p>
-      </div>
 
       <button
         type="submit"
         disabled={
           saving ||
-          !competitions.length ||
+          !competition ||
           (competition?.competition_type === "INDIVIDUAL" &&
-            availableParticipants.length === 0) ||
+            availableParticipants.length < 3) ||
           (competition?.competition_type === "GROUP" &&
-            availableGroups.length === 0)
+            availableGroups.length < 3)
         }
-        className="rounded-lg bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 disabled:opacity-50"
+        className="w-full rounded-lg bg-green-500 px-6 py-3 font-semibold text-black hover:bg-green-400 disabled:opacity-50"
       >
-        {saving ? "Saving..." : "Save Result"}
+        {saving ? "Saving Results..." : "Save 1st, 2nd & 3rd Results"}
       </button>
 
       {message && (

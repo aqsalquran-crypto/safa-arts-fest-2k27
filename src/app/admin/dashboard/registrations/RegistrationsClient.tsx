@@ -47,15 +47,22 @@ type Group = {
   participant_ids: string[];
 };
 
+type Category = {
+  id: string;
+  name: string;
+};
+
 type Props = {
   participants: Participant[];
   competitions: Competition[];
   registrations: Registration[];
-  categories: { id: string; name: string }[];
+  categories: Category[];
   teams: Team[];
   groups: Group[];
   error?: boolean;
 };
+
+const MAIN_CATEGORIES = ["BIDAYA", "THANAVIYYA", "ALIYA"];
 
 export default function RegistrationsClient({
   participants = [],
@@ -67,6 +74,43 @@ export default function RegistrationsClient({
   error = false,
 }: Props) {
   const router = useRouter();
+
+  // --------------------------------------------------
+  // KULLIYYA ELIGIBILITY
+  // --------------------------------------------------
+
+  const kulliyyaCategoryId = categories.find(
+    (item) => item.name.trim().toUpperCase() === "KULLIYYA"
+  )?.id;
+
+  function isEligibleForCompetition(
+    competition: Competition | undefined,
+    participant: Participant
+  ) {
+    if (!competition) return false;
+
+    const eligibleIds = competition.eligible_category_ids || [];
+
+    // Participant's own category is eligible.
+    if (eligibleIds.includes(participant.category_id)) {
+      return true;
+    }
+
+    // KULLIYYA competitions are also open to the three main categories.
+    const participantCategory = (
+      participant.category_name || ""
+    ).trim().toUpperCase();
+
+    const isMainCategory = MAIN_CATEGORIES.includes(
+      participantCategory
+    );
+
+    const isKulliyyaCompetition =
+      !!kulliyyaCategoryId &&
+      eligibleIds.includes(kulliyyaCategoryId);
+
+    return isMainCategory && isKulliyyaCompetition;
+  }
 
   // --------------------------------------------------
   // INDIVIDUAL REGISTRATION STATE
@@ -135,11 +179,9 @@ export default function RegistrationsClient({
     return competitions.filter(
       (competition) =>
         competition.competition_type === "INDIVIDUAL" &&
-        (competition.eligible_category_ids || []).includes(
-          selectedParticipant.category_id
-        )
+        isEligibleForCompetition(competition, selectedParticipant)
     );
-  }, [competitions, selectedParticipant]);
+  }, [competitions, selectedParticipant, kulliyyaCategoryId]);
 
   const registeredForParticipant = registrations.filter(
     (item) => item.participant_id === participantId
@@ -253,10 +295,12 @@ export default function RegistrationsClient({
     (competition) => competition.id === groupCompetitionId
   );
 
+  // KULLIYYA eligibility also applies to group participants.
   const eligibleGroupParticipants = groupTeamParticipants.filter(
     (participant) =>
-      (selectedGroupCompetition?.eligible_category_ids || []).includes(
-        participant.category_id
+      isEligibleForCompetition(
+        selectedGroupCompetition,
+        participant
       ) &&
       !groups.some(
         (group) =>
@@ -574,7 +618,7 @@ export default function RegistrationsClient({
                 </h2>
 
                 <p className="mt-2 text-sm text-gray-400">
-                  Only individual competitions available for the selected participant&apos;s category are shown.
+                  Eligible individual competitions for the selected participant are shown here, including KULLIYYA competitions.
                 </p>
 
                 {!selectedParticipant ? (
@@ -648,6 +692,14 @@ export default function RegistrationsClient({
                                 {competition.competition_type}
                                 {" · "}
                                 {competition.status || "No status"}
+                                {kulliyyaCategoryId &&
+                                  competition.eligible_category_ids?.includes(
+                                    kulliyyaCategoryId
+                                  ) && (
+                                    <span className="ml-2 text-green-400">
+                                      KULLIYYA
+                                    </span>
+                                  )}
                               </p>
                             </div>
                           </label>
@@ -796,6 +848,8 @@ export default function RegistrationsClient({
                           {participant.full_name}
                           <span className="block text-xs text-gray-500">
                             {participant.tag_number}
+                            {" · "}
+                            {participant.category_name}
                           </span>
                         </span>
                       </label>
@@ -820,7 +874,7 @@ export default function RegistrationsClient({
               </button>
             </section>
 
-            {/* EXISTING INDIVIDUAL REGISTRATIONS - GROUPED VIEW */}
+            {/* EXISTING INDIVIDUAL REGISTRATIONS */}
 
             <section className="mt-10 rounded-2xl border border-white/10 bg-white/[0.04] p-6">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -856,8 +910,6 @@ export default function RegistrationsClient({
                       key={item.participant.id}
                       className="overflow-hidden rounded-xl border border-white/10 bg-black/30"
                     >
-                      {/* PARTICIPANT DETAILS */}
-
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-white/[0.03] p-4">
                         <div>
                           <h3 className="font-bold text-white">
@@ -877,8 +929,6 @@ export default function RegistrationsClient({
                           {item.competitions.length} Competitions
                         </span>
                       </div>
-
-                      {/* REGISTERED COMPETITIONS */}
 
                       <div className="p-4">
                         <p className="mb-3 text-xs font-semibold tracking-wider text-gray-500">

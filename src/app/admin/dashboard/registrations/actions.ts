@@ -6,6 +6,8 @@ import { createClient } from "../../../../utils/supabase-server";
 
 const REGISTRATIONS_PATH = "/admin/dashboard/registrations";
 
+const MAIN_CATEGORIES = ["BIDAYA", "THANAVIYYA", "ALIYA"];
+
 async function verifyAdmin() {
   const supabase = await createClient();
 
@@ -15,10 +17,7 @@ async function verifyAdmin() {
   } = await supabase.auth.getUser();
 
   if (authError || !user) {
-    return {
-      supabase: null,
-      error: "Please log in as admin.",
-    };
+    return { supabase: null, error: "Please log in as admin." };
   }
 
   const { data: admin, error: adminError } = await supabase
@@ -28,15 +27,36 @@ async function verifyAdmin() {
     .maybeSingle();
 
   if (adminError || !admin) {
-    return {
-      supabase: null,
-      error: "Admin access required.",
-    };
+    return { supabase: null, error: "Admin access required." };
   }
 
+  return { supabase, error: null };
+}
+
+async function getCategoryInfo(supabase: any) {
+  const { data, error } = await supabase
+    .from("categories")
+    .select("id, name");
+
+  if (error || !data) {
+    throw new Error("Could not load categories.");
+  }
+
+  const kulliyya = data.find(
+    (item: any) => item.name?.trim().toUpperCase() === "KULLIYYA"
+  );
+
+  const mainCategoryIds = new Set(
+    data
+      .filter((item: any) =>
+        MAIN_CATEGORIES.includes(item.name?.trim().toUpperCase())
+      )
+      .map((item: any) => item.id)
+  );
+
   return {
-    supabase,
-    error: null,
+    kulliyyaCategoryId: kulliyya?.id ?? null,
+    mainCategoryIds,
   };
 }
 
@@ -110,21 +130,30 @@ export async function registerParticipant(
     if (
       competitionRows.length !== uniqueIds.length ||
       competitionRows.some(
-        (item) => item.competition_type !== "INDIVIDUAL"
+        (item: any) => item.competition_type !== "INDIVIDUAL"
       )
     ) {
       return {
         success: false,
-        message: "Individual registration accepts only INDIVIDUAL competitions.",
+        message:
+          "Individual registration accepts only INDIVIDUAL competitions.",
       };
     }
+
+    const { kulliyyaCategoryId, mainCategoryIds } =
+      await getCategoryInfo(supabase);
+
+    const categoryIdsToCheck = [
+      participant.category_id,
+      ...(kulliyyaCategoryId ? [kulliyyaCategoryId] : []),
+    ];
 
     const { data: eligibleLinks, error: eligibilityError } =
       await supabase
         .from("competition_categories")
-        .select("competition_id")
-        .eq("category_id", participant.category_id)
-        .in("competition_id", uniqueIds);
+        .select("competition_id, category_id")
+        .in("competition_id", uniqueIds)
+        .in("category_id", categoryIdsToCheck);
 
     if (eligibilityError) {
       return {
@@ -133,14 +162,34 @@ export async function registerParticipant(
       };
     }
 
-    const eligibleIds = new Set(
-      (eligibleLinks ?? []).map((item) => item.competition_id)
+    const eligiblePairs = new Set(
+      (eligibleLinks ?? []).map(
+        (item: any) =>
+          `${item.competition_id}:${item.category_id}`
+      )
     );
 
-    if (uniqueIds.some((id) => !eligibleIds.has(id))) {
+    const participantCanUseKulliyya =
+      !!kulliyyaCategoryId &&
+      mainCategoryIds.has(participant.category_id);
+
+    const invalidCompetition = uniqueIds.find((id) => {
+      const directEligibility = eligiblePairs.has(
+        `${id}:${participant.category_id}`
+      );
+
+      const kulliyyaEligibility =
+        participantCanUseKulliyya &&
+        eligiblePairs.has(`${id}:${kulliyyaCategoryId}`);
+
+      return !directEligibility && !kulliyyaEligibility;
+    });
+
+    if (invalidCompetition) {
       return {
         success: false,
-        message: "Some competitions are not available for this participant's category.",
+        message:
+          "Some competitions are not available for this participant's category.",
       };
     }
 
@@ -159,7 +208,7 @@ export async function registerParticipant(
     }
 
     const existingIds = new Set(
-      (existing ?? []).map((item) => item.competition_id)
+      (existing ?? []).map((item: any) => item.competition_id)
     );
 
     const newIds = uniqueIds.filter(
@@ -203,7 +252,10 @@ export async function registerParticipant(
 
     return {
       success: false,
-      message: "Unexpected error while registering participant.",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unexpected error while registering participant.",
     };
   }
 }
@@ -318,8 +370,6 @@ export async function registerGroup(
       };
     }
 
-    // Verify competition type.
-
     const { data: competition, error: competitionError } =
       await supabase
         .from("competitions")
@@ -341,8 +391,6 @@ export async function registerGroup(
       };
     }
 
-    // Verify all participants belong to the selected team.
-
     const { data: participants, error: participantError } =
       await supabase
         .from("participants")
@@ -363,26 +411,32 @@ export async function registerGroup(
       };
     }
 
-    if (participants.some((item) => item.team_id !== teamId)) {
+    if (participants.some((item: any) => item.team_id !== teamId)) {
       return {
         success: false,
         message: "All group members must belong to the selected team.",
       };
     }
 
-    if (participants.some((item) => !item.category_id)) {
+    if (participants.some((item: any) => !item.category_id)) {
       return {
         success: false,
         message: "Every participant must have a category assigned.",
       };
     }
 
-    // Verify category eligibility for every participant.
+    const { kulliyyaCategoryId, mainCategoryIds } =
+      await getCategoryInfo(supabase);
 
     const categoryIds = [
       ...new Set(
-        participants.map((item) => item.category_id as string)
+        participants.map((item: any) => item.category_id as string)
       ),
+    ];
+
+    const categoryIdsToCheck = [
+      ...categoryIds,
+      ...(kulliyyaCategoryId ? [kulliyyaCategoryId] : []),
     ];
 
     const { data: eligibleLinks, error: eligibilityError } =
@@ -390,7 +444,7 @@ export async function registerGroup(
         .from("competition_categories")
         .select("category_id")
         .eq("competition_id", competitionId)
-        .in("category_id", categoryIds);
+        .in("category_id", categoryIdsToCheck);
 
     if (eligibilityError) {
       return {
@@ -400,18 +454,30 @@ export async function registerGroup(
     }
 
     const eligibleCategoryIds = new Set(
-      (eligibleLinks ?? []).map((item) => item.category_id)
+      (eligibleLinks ?? []).map((item: any) => item.category_id)
     );
 
-    if (categoryIds.some((id) => !eligibleCategoryIds.has(id))) {
+    const kulliyyaIsEligible =
+      !!kulliyyaCategoryId &&
+      eligibleCategoryIds.has(kulliyyaCategoryId);
+
+    const hasIneligibleParticipant = participants.some((item: any) => {
+      const directEligibility = eligibleCategoryIds.has(item.category_id);
+
+      const kulliyyaEligibility =
+        kulliyyaIsEligible &&
+        mainCategoryIds.has(item.category_id);
+
+      return !directEligibility && !kulliyyaEligibility;
+    });
+
+    if (hasIneligibleParticipant) {
       return {
         success: false,
-        message: "Some participants are not eligible for this competition.",
+        message:
+          "Some participants are not eligible for this competition.",
       };
     }
-
-    // Check whether any participant is already in another group
-    // for this same competition.
 
     const { data: existingMembers, error: existingError } =
       await supabase
@@ -430,11 +496,10 @@ export async function registerGroup(
     if ((existingMembers ?? []).length > 0) {
       return {
         success: false,
-        message: "One or more participants already belong to a group in this competition.",
+        message:
+          "One or more participants already belong to a group in this competition.",
       };
     }
-
-    // Create the group.
 
     const { data: group, error: groupError } = await supabase
       .from("competition_groups")
@@ -451,11 +516,11 @@ export async function registerGroup(
 
       return {
         success: false,
-        message: "Could not create group: " + (groupError?.message ?? "Unknown error"),
+        message:
+          "Could not create group: " +
+          (groupError?.message ?? "Unknown error"),
       };
     }
-
-    // Add participants to the group.
 
     const memberRows = uniqueParticipantIds.map((participantId) => ({
       competition_id: competitionId,
@@ -470,7 +535,6 @@ export async function registerGroup(
     if (memberError) {
       console.error("Group member insertion error:", memberError);
 
-      // Attempt to remove the newly created empty/failed group.
       const { error: rollbackError } = await supabase
         .from("competition_groups")
         .delete()
@@ -482,7 +546,9 @@ export async function registerGroup(
 
       return {
         success: false,
-        message: "Group was created, but adding members failed: " + memberError.message,
+        message:
+          "Group was created, but adding members failed: " +
+          memberError.message,
       };
     }
 
@@ -497,7 +563,10 @@ export async function registerGroup(
 
     return {
       success: false,
-      message: "Unexpected error while registering group.",
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unexpected error while registering group.",
     };
   }
 }
